@@ -68,6 +68,19 @@ function decrypt(cipherText: string, key: Buffer): string {
   return decrypted;
 }
 
+// AIのAPIキーをDBから復号して取得するヘルパー
+// 旧データ（平文）のマイグレーション互換: decrypt失敗時はフォールバックで平文値を返す
+function getUserAiApiKey(user: any, masterKey?: Buffer): string {
+  if (!user?.aiApiKey) return "";
+  if (!masterKey) return "";
+  try {
+    return decrypt(user.aiApiKey, masterKey);
+  } catch {
+    // マイグレーション: 旧データが平文の場合はそのまま返す
+    return user.aiApiKey;
+  }
+}
+
 // TOTP verification helpers
 function decodeBase32(base32: string): Buffer {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -287,7 +300,7 @@ app.get("/api/settings", requireAuth, (req: any, res: any) => {
   }
   res.json({
     aiProvider: user.aiProvider || "gemini",
-    aiApiKey: user.aiApiKey || "",
+    aiApiKey: getUserAiApiKey(user, req.session.masterKey),
     aiEndpoint: user.aiEndpoint || "https://api.openai.com/v1",
     aiModel: user.aiModel || "gemini-3.5-flash",
     theme: user.theme || "slate-light",
@@ -303,7 +316,7 @@ app.post("/api/settings", requireAuth, (req: any, res: any) => {
     return res.status(404).json({ error: "User not found" });
   }
   if (aiProvider !== undefined) user.aiProvider = aiProvider;
-  if (aiApiKey !== undefined) user.aiApiKey = aiApiKey;
+  if (aiApiKey !== undefined) user.aiApiKey = aiApiKey ? encrypt(aiApiKey, req.session.masterKey) : "";
   if (aiEndpoint !== undefined) user.aiEndpoint = aiEndpoint;
   if (aiModel !== undefined) user.aiModel = aiModel;
   if (theme !== undefined) user.theme = theme;
@@ -313,7 +326,7 @@ app.post("/api/settings", requireAuth, (req: any, res: any) => {
     success: true,
     settings: {
       aiProvider: user.aiProvider,
-      aiApiKey: user.aiApiKey,
+      aiApiKey: getUserAiApiKey(user, req.session.masterKey),
       aiEndpoint: user.aiEndpoint,
       aiModel: user.aiModel,
       theme: user.theme || "slate-light",
@@ -526,12 +539,13 @@ async function generateMemoMetadata(
   content: string,
   userId: string,
   currentMemoId: string,
-  existingMemos: any[]
+  existingMemos: any[],
+  masterKey?: Buffer
 ): Promise<{ tags: string[]; relatedMemoIds: string[]; summary: string }> {
   const db = readDB();
   const user = db.users.find((u: any) => u.id === userId);
   const provider = user?.aiProvider || "gemini";
-  const apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+  const apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
   const endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
   const model = user?.aiModel || "gemini-3.5-flash";
 
@@ -566,9 +580,9 @@ Return only the JSON containing "tags" (string array of exactly 5 elements), "re
       try {
         if (provider === "gemini") {
           let userAi = ai;
-          if (user?.aiApiKey) {
+          if (getUserAiApiKey(user, masterKey)) {
             userAi = new GoogleGenAI({
-              apiKey: user.aiApiKey,
+              apiKey: getUserAiApiKey(user, masterKey),
               httpOptions: {
                 headers: {
                   "User-Agent": "aistudio-build",
@@ -859,7 +873,7 @@ app.post("/api/memos", requireAuth, async (req: any, res) => {
       summary: "新規作成されたメモ。",
     };
   } else {
-    metadata = await generateMemoMetadata(title, content || "", userId, targetId, existingMemos);
+    metadata = await generateMemoMetadata(title, content || "", userId, targetId, existingMemos, masterKey);
   }
 
   const encryptedContent = encrypt(content || "", masterKey);
@@ -940,7 +954,7 @@ app.post("/api/memos/:id/regenerate-metadata", requireAuth, async (req: any, res
     .filter((m: any) => m.userId === userId)
     .map((m: any) => ({ id: m.id, title: m.title, tags: m.tags || [] }));
 
-  const metadata = await generateMemoMetadata(memo.title, content, userId, id, existingMemos);
+  const metadata = await generateMemoMetadata(memo.title, content, userId, id, existingMemos, masterKey);
 
   db.memos[memoIndex].tags = metadata.tags;
   db.memos[memoIndex].relatedMemoIds = metadata.relatedMemoIds;
@@ -1008,7 +1022,8 @@ app.post("/api/memos/batch-regenerate-metadata", requireAuth, async (req: any, r
         current.content,
         userId,
         current.id,
-        existingList
+        existingList,
+        masterKey
       );
 
       const idx = db.memos.findIndex((m: any) => m.id === current.id && m.userId === userId);
@@ -1128,16 +1143,16 @@ Return ONLY a JSON response matching the required schema.
 
     const user = db.users.find((u: any) => u.id === userId);
     const provider = user?.aiProvider || "gemini";
-    const apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+    const apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
     const endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
     const model = user?.aiModel || "gemini-3.5-flash";
 
     let resultText = "";
     if (provider === "gemini") {
       let userAi = ai;
-      if (user?.aiApiKey) {
+      if (getUserAiApiKey(user, masterKey)) {
         userAi = new GoogleGenAI({
-          apiKey: user.aiApiKey,
+          apiKey: getUserAiApiKey(user, masterKey),
           httpOptions: {
             headers: {
               "User-Agent": "aistudio-build",
@@ -1253,7 +1268,7 @@ Return ONLY a JSON response matching the required schema.
         const existingMemos = decryptedMemos.map((m: any) => ({ id: m.id, title: m.title, tags: m.tags || [] }));
         
         // Generate metadata
-        const metadata = await generateMemoMetadata(memoTitle, memoContent || "", userId, targetId, existingMemos);
+        const metadata = await generateMemoMetadata(memoTitle, memoContent || "", userId, targetId, existingMemos, masterKey);
         const encryptedContent = encrypt(memoContent || "", masterKey);
         const now = new Date().toISOString();
         
@@ -1282,7 +1297,7 @@ Return ONLY a JSON response matching the required schema.
         const existingIndex = db.memos.findIndex((m: any) => m.id === targetMemoId && m.userId === userId);
         if (existingIndex !== -1) {
           const existingMemos = decryptedMemos.map((m: any) => ({ id: m.id, title: m.title, tags: m.tags || [] }));
-          const metadata = await generateMemoMetadata(memoTitle, memoContent || "", userId, targetMemoId, existingMemos);
+          const metadata = await generateMemoMetadata(memoTitle, memoContent || "", userId, targetMemoId, existingMemos, masterKey);
           const encryptedContent = encrypt(memoContent || "", masterKey);
           const now = new Date().toISOString();
           
@@ -1339,7 +1354,7 @@ Return ONLY a JSON response matching the required schema.
 
 // 7.6. Memo Endpoint: AI Voice Input Cleanup
 app.post("/api/memos/clean-voice", requireAuth, async (req: any, res) => {
-  const { userId } = req.session;
+  const { userId, masterKey } = req.session;
   const { transcript } = req.body;
 
   if (!transcript) {
@@ -1349,7 +1364,7 @@ app.post("/api/memos/clean-voice", requireAuth, async (req: any, res) => {
   const db = readDB();
   const user = db.users.find((u: any) => u.id === userId);
   const provider = user?.aiProvider || "gemini";
-  const apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+  const apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
   const endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
   const model = user?.aiModel || "gemini-3.5-flash";
 
@@ -1365,9 +1380,9 @@ Original transcription: "${transcript}"`;
     let cleanedText = transcript;
     if (provider === "gemini") {
       let userAi = ai;
-      if (user?.aiApiKey) {
+      if (getUserAiApiKey(user, masterKey)) {
         userAi = new GoogleGenAI({
-          apiKey: user.aiApiKey,
+          apiKey: getUserAiApiKey(user, masterKey),
           httpOptions: { headers: { "User-Agent": "aistudio-build" } },
         });
       }
@@ -1452,7 +1467,7 @@ app.post("/api/memos/dynamic-suggestions", requireAuth, async (req: any, res) =>
 
   const user = db.users.find((u: any) => u.id === userId);
   const provider = user?.aiProvider || "gemini";
-  const apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+  const apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
   const endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
   const model = user?.aiModel || "gemini-3.5-flash";
 
@@ -1479,9 +1494,9 @@ Return ONLY a JSON response matching this schema:
     let resultText = "";
     if (provider === "gemini") {
       let userAi = ai;
-      if (user?.aiApiKey) {
+      if (getUserAiApiKey(user, masterKey)) {
         userAi = new GoogleGenAI({
-          apiKey: user.aiApiKey,
+          apiKey: getUserAiApiKey(user, masterKey),
           httpOptions: { headers: { "User-Agent": "aistudio-build" } },
         });
       }
@@ -1759,7 +1774,7 @@ app.post("/api/memos/import", requireAuth, async (req: any, res) => {
 
 // 7.10. Memo Endpoint: Analyze non-text files (Images, Audio, Video, PDF) and convert to text
 app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
-  const { userId } = req.session;
+  const { userId, masterKey } = req.session;
   const { fileData, mimeType, fileName } = req.body;
 
   if (!fileData || !mimeType) {
@@ -1769,7 +1784,7 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
   const db = readDB();
   const user = db.users.find((u: any) => u.id === userId);
   let provider = user?.aiProvider || "gemini";
-  let apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+  let apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
   let endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
   let model = user?.aiModel || "gemini-3.5-flash";
 
@@ -1806,7 +1821,7 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
     if (provider === "gemini") {
       let userAi = ai;
       // Use user's key if provided, else standard server key
-      const finalApiKey = user?.aiApiKey || process.env.GEMINI_API_KEY;
+      const finalApiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY;
       if (finalApiKey) {
         userAi = new GoogleGenAI({
           apiKey: finalApiKey,
@@ -1957,7 +1972,7 @@ app.post("/api/auth/rotate-api-key", requireAuth, (req: any, res) => {
 
 // 7.12. Memo Endpoint: Fetch content from a URL (webpage or direct file) and analyze it
 app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
-  const { userId } = req.session;
+  const { userId, masterKey } = req.session;
   const { url } = req.body;
 
   if (!url) {
@@ -1998,7 +2013,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
     const db = readDB();
     const user = db.users.find((u: any) => u.id === userId);
     let provider = user?.aiProvider || "gemini";
-    let apiKey = user?.aiApiKey || process.env.GEMINI_API_KEY || "dummy";
+    let apiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY || "dummy";
     let model = user?.aiModel || "gemini-3.5-flash";
     let endpoint = user?.aiEndpoint || "https://api.openai.com/v1";
 
@@ -2019,7 +2034,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
 
         if (provider === "gemini") {
           let userAi = ai;
-          const finalApiKey = user?.aiApiKey || process.env.GEMINI_API_KEY;
+          const finalApiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY;
           if (finalApiKey) {
             userAi = new GoogleGenAI({
               apiKey: finalApiKey,
@@ -2064,7 +2079,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
 
         if (provider === "gemini") {
           let userAi = ai;
-          const finalApiKey = user?.aiApiKey || process.env.GEMINI_API_KEY;
+          const finalApiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY;
           if (finalApiKey) {
             userAi = new GoogleGenAI({
               apiKey: finalApiKey,
@@ -2145,7 +2160,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
 
       if (activeProvider === "gemini") {
         let userAi = ai;
-        const finalApiKey = user?.aiApiKey || process.env.GEMINI_API_KEY;
+        const finalApiKey = getUserAiApiKey(user, masterKey) || process.env.GEMINI_API_KEY;
         if (finalApiKey) {
           userAi = new GoogleGenAI({
             apiKey: finalApiKey,
@@ -2274,7 +2289,7 @@ app.post("/api/external/memos", async (req, res) => {
     .map((m: any) => ({ id: m.id, title: m.title, tags: m.tags || [] }));
 
   const targetId = crypto.randomUUID();
-  const metadata = await generateMemoMetadata(title, content || "", user.id, targetId, existingMemos);
+  const metadata = await generateMemoMetadata(title, content || "", user.id, targetId, existingMemos, masterKey);
 
   const encryptedContent = encrypt(content || "", masterKey);
   const now = new Date().toISOString();
