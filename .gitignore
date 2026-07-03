@@ -8,3 +8,4 @@ coverage/
 !.env.example
 data/
 .venus-vault/
+firebase-applet-config.json
