@@ -30,8 +30,7 @@ if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], memos: [] }, null, 2));
 }
 
-// Serve uploaded files statically
-app.use("/uploads", express.static(UPLOADS_DIR));
+
 
 // In-memory sessions map: token -> user's decrypted 32-byte master key (Buffer)
 const activeSessions = new Map<string, { userId: string; username: string; masterKey: Buffer }>();
@@ -73,6 +72,20 @@ function decrypt(cipherText: string, key: Buffer): string {
   let decrypted = decipher.update(encryptedText, undefined, "utf8");
   decrypted += decipher.final("utf8");
   return decrypted;
+}
+
+function encryptBuffer(buffer: Buffer, key: Buffer): Buffer {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  return Buffer.concat([iv, encrypted]);
+}
+
+function decryptBuffer(encryptedBuffer: Buffer, key: Buffer): Buffer {
+  const iv = encryptedBuffer.subarray(0, 16);
+  const encryptedData = encryptedBuffer.subarray(16);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  return Buffer.concat([decipher.update(encryptedData), decipher.final()]);
 }
 
 // AIのAPIキーをDBから復号して取得するヘルパー
@@ -1997,25 +2010,96 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
 
 // 7.10.5. Memo Endpoint: Standard file upload for embedding in memos
 app.post("/api/upload", requireAuth, (req: any, res) => {
+  const { userId, masterKey } = req.session;
   const { fileData, mimeType, fileName } = req.body;
   if (!fileData || !mimeType || !fileName) {
     return res.status(400).json({ error: "fileData, mimeType, and fileName are required" });
   }
 
+  if (!masterKey) {
+    return res.status(400).json({ error: "マスターキーがセッションに存在しません。一度ログアウトして再ログインしてください。" });
+  }
+
   try {
-    const buffer = Buffer.from(fileData, "base64");
+    const rawBuffer = Buffer.from(fileData, "base64");
+    const encryptedBuffer = encryptBuffer(rawBuffer, masterKey);
+    
     const uuid = crypto.randomUUID();
     const cleanFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, "_");
     const safeName = `${uuid}-${cleanFileName}`;
     const filePath = path.join(UPLOADS_DIR, safeName);
     
-    fs.writeFileSync(filePath, buffer);
-    const fileUrl = `/uploads/${safeName}`;
+    fs.writeFileSync(filePath, encryptedBuffer);
+    const fileUrl = `/api/uploads/${safeName}`;
     
     res.json({ success: true, url: fileUrl, fileName, mimeType });
   } catch (err: any) {
     console.error("File upload failed:", err);
     res.status(500).json({ error: "ファイルのアップロードに失敗しました: " + err.message });
+  }
+});
+
+// Custom auth middleware supporting query parameter tokens for static file requests
+function requireAuthWithQuery(req: any, res: any, next: any) {
+  let token = req.query.token;
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    }
+  }
+  
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized: Missing session token" });
+  }
+  const session = activeSessions.get(token);
+  if (!session) {
+    return res.status(401).json({ error: "Unauthorized: Session expired or invalid" });
+  }
+  req.session = session;
+  next();
+}
+
+// Secure media delivery endpoint: decrypts the file on-the-fly for authenticated sessions
+app.get("/api/uploads/:filename", requireAuthWithQuery, (req: any, res: any) => {
+  const { masterKey } = req.session;
+  const filename = req.params.filename;
+  
+  if (!masterKey) {
+    return res.status(400).json({ error: "マスターキーがセッションに存在しません。再ログインしてください。" });
+  }
+
+  // Prevent directory traversal
+  const safeName = path.basename(filename);
+  const filePath = path.join(UPLOADS_DIR, safeName);
+  
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "File not found" });
+  }
+  
+  try {
+    const encryptedData = fs.readFileSync(filePath);
+    const decryptedData = decryptBuffer(encryptedData, masterKey);
+    
+    const ext = path.extname(safeName).toLowerCase();
+    let contentType = "application/octet-stream";
+    if (ext === ".png") contentType = "image/png";
+    else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+    else if (ext === ".gif") contentType = "image/gif";
+    else if (ext === ".webp") contentType = "image/webp";
+    else if (ext === ".svg") contentType = "image/svg+xml";
+    else if (ext === ".mp3") contentType = "audio/mpeg";
+    else if (ext === ".wav") contentType = "audio/wav";
+    else if (ext === ".ogg") contentType = "audio/ogg";
+    else if (ext === ".m4a") contentType = "audio/mp4";
+    else if (ext === ".mp4") contentType = "video/mp4";
+    else if (ext === ".webm") contentType = "video/webm";
+    
+    res.setHeader("Content-Type", contentType);
+    res.send(decryptedData);
+  } catch (err: any) {
+    console.error("File decryption or delivery failed:", err);
+    res.status(500).json({ error: "ファイルの復号または配信に失敗しました" });
   }
 });
 

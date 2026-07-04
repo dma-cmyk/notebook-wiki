@@ -11,9 +11,10 @@ interface MarkdownRendererProps {
   onLinkClick?: (memoId: string) => void;
   allMemos?: { id: string; title: string }[];
   activeTheme?: ThemePreset;
+  token?: string;
 }
 
-export function MarkdownRenderer({ content, onLinkClick, allMemos = [], activeTheme }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, onLinkClick, allMemos = [], activeTheme, token }: MarkdownRendererProps) {
   const isDark = activeTheme?.isDark ?? false;
 
   if (!content) return <p className={isDark ? "text-slate-400 italic" : "text-gray-400 italic"}>本文がありません。</p>;
@@ -223,16 +224,21 @@ export function MarkdownRenderer({ content, onLinkClick, allMemos = [], activeTh
         mediaType = "video";
       }
 
+      // Append session token to secure media URLs so the browser can load them
+      const displayUrl = (url.startsWith("/api/uploads/") && token) 
+        ? `${url}?token=${encodeURIComponent(token)}` 
+        : url;
+
       if (mediaType === "image") {
         elements.push(
           <div key={i} className="mb-4 group relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs transition-all hover:shadow-md bg-slate-50 dark:bg-slate-900/40 p-1 max-w-lg">
             <img
-              src={url}
+              src={displayUrl}
               alt={alt || "画像"}
               className="w-full max-h-[350px] object-contain rounded-lg bg-black cursor-zoom-in transition-transform duration-300 group-hover:scale-[1.005]"
               referrerPolicy="no-referrer"
               onClick={() => {
-                window.open(url, "_blank");
+                window.open(displayUrl, "_blank");
               }}
             />
             {alt && (
@@ -257,14 +263,14 @@ export function MarkdownRenderer({ content, onLinkClick, allMemos = [], activeTh
                 <p className="text-[10px] text-slate-400 font-mono">Audio Clip</p>
               </div>
             </div>
-            <audio src={url} controls className="w-full h-8 outline-none mt-1" />
+            <audio src={displayUrl} controls className="w-full h-8 outline-none mt-1" />
           </div>
         );
         continue;
       } else if (mediaType === "video") {
         elements.push(
           <div key={i} className="mb-4 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-xs bg-black max-w-lg">
-            <video src={url} controls className="w-full max-h-[300px]" />
+            <video src={displayUrl} controls className="w-full max-h-[300px]" />
             {alt && (
               <div className="px-3 py-1.5 text-xs text-slate-400 bg-slate-900/90 border-t border-slate-800 truncate">
                 🎥 {alt}

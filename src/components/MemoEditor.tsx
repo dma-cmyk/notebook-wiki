@@ -427,7 +427,7 @@ export function MemoEditor({
                 </div>
               ) : (
                 <div className={`flex-1 overflow-y-auto border-t pt-6 max-w-none min-h-[300px] ${activeTheme.border}`}>
-                  <MarkdownRenderer content={content} onLinkClick={onSelectMemo} allMemos={allMemos} activeTheme={activeTheme} />
+                  <MarkdownRenderer content={content} onLinkClick={onSelectMemo} allMemos={allMemos} activeTheme={activeTheme} token={token || undefined} />
                 </div>
               )}
             </div>

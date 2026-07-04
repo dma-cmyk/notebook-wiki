@@ -745,7 +745,7 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
                     <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
                   ) : (
                     <div className="text-sm leading-relaxed">
-                      <MarkdownRenderer content={msg.content} activeTheme={activeTheme} />
+                      <MarkdownRenderer content={msg.content} activeTheme={activeTheme} token={token || undefined} />
                     </div>
                   )}
                 </div>
