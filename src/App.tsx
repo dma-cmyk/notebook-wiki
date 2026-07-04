@@ -1967,7 +1967,7 @@ fetch(url, {
 
                   <button
                     type="submit"
-                    disabled={isChangingPassword || !currentPassphrase || !newPassphrase || !confirmNewPassphrase || !passwordChangeTotp}
+                    disabled={isChangingPassword}
                     className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2 rounded-lg cursor-pointer transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
                   >
                     {isChangingPassword ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
@@ -2036,7 +2036,7 @@ fetch(url, {
 
                   <button
                     type="submit"
-                    disabled={isDeletingAccount || !deletePassphrase || !confirmDeleteCheckbox || !deleteAccountTotp}
+                    disabled={isDeletingAccount}
                     className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-2 rounded-lg cursor-pointer transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                   >
                     {isDeletingAccount ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserX className="w-3.5 h-3.5" />}

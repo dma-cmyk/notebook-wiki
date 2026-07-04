@@ -45,6 +45,56 @@ export function MemoEditor({
   const [showSaveDropdown, setShowSaveDropdown] = useState(false);
   const [showDownloadDialog, setShowDownloadDialog] = useState(false);
   const [enteredFilename, setEnteredFilename] = useState("");
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+
+  const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "image" | "audio" | "video") => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    setIsUploadingMedia(true);
+
+    try {
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64 = result.split(",")[1] || result;
+          resolve(base64);
+        };
+        reader.onerror = (err) => reject(err);
+        reader.readAsDataURL(file);
+      });
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          fileData: base64Data,
+          mimeType: file.type,
+          fileName: file.name,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Upload failed with status ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.success && data.url) {
+        const prefix = type === "image" ? "画像" : type === "audio" ? "音声" : "動画";
+        const cleanName = file.name.split(".")[0];
+        const markdownTag = `\n![${prefix}: ${cleanName}](${data.url})\n`;
+        setContent((prev) => prev + markdownTag);
+      }
+    } catch (err: any) {
+      console.error("Failed to upload file:", err);
+      alert("ファイルのアップロードに失敗しました: " + err.message);
+    } finally {
+      setIsUploadingMedia(false);
+    }
+  };
 
   // Sync state with selected memo
   useEffect(() => {
@@ -322,12 +372,59 @@ export function MemoEditor({
 
               {/* Content Pane */}
               {mode === "edit" ? (
-                <textarea
-                  placeholder="ここにメモを記述してください (Markdown対応)..."
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  className={`w-full flex-1 border-none focus:outline-none resize-none font-sans text-sm leading-relaxed p-0 focus:ring-0 overflow-y-auto min-h-[300px] bg-transparent ${activeTheme.textMain} placeholder-slate-400/60`}
-                />
+                <div className="flex-1 flex flex-col min-h-[300px]">
+                  {/* Media Insert Toolbar */}
+                  <div className="flex flex-wrap items-center gap-2 border-b pb-2 mb-3 select-none">
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border cursor-pointer hover:bg-opacity-80 transition-all ${activeTheme.cardBg} ${activeTheme.border} ${activeTheme.textMain}`}>
+                      <svg className="w-3.5 h-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                      </svg>
+                      <span>画像を挿入</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleMediaUpload(e, "image")}
+                      />
+                    </label>
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border cursor-pointer hover:bg-opacity-80 transition-all ${activeTheme.cardBg} ${activeTheme.border} ${activeTheme.textMain}`}>
+                      <svg className="w-3.5 h-3.5 text-pink-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                      </svg>
+                      <span>音声を挿入</span>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={(e) => handleMediaUpload(e, "audio")}
+                      />
+                    </label>
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border cursor-pointer hover:bg-opacity-80 transition-all ${activeTheme.cardBg} ${activeTheme.border} ${activeTheme.textMain}`}>
+                      <svg className="w-3.5 h-3.5 text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      <span>動画を挿入</span>
+                      <input
+                        type="file"
+                        accept="video/*"
+                        className="hidden"
+                        onChange={(e) => handleMediaUpload(e, "video")}
+                      />
+                    </label>
+                    {isUploadingMedia && (
+                      <span className="text-[11px] text-slate-400 flex items-center gap-1 animate-pulse ml-2">
+                        <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />
+                        <span>アップロード中...</span>
+                      </span>
+                    )}
+                  </div>
+                  <textarea
+                    placeholder="ここにメモを記述してください (Markdown対応)..."
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    className={`w-full flex-1 border-none focus:outline-none resize-none font-sans text-sm leading-relaxed p-0 focus:ring-0 overflow-y-auto bg-transparent ${activeTheme.textMain} placeholder-slate-400/60`}
+                  />
+                </div>
               ) : (
                 <div className={`flex-1 overflow-y-auto border-t pt-6 max-w-none min-h-[300px] ${activeTheme.border}`}>
                   <MarkdownRenderer content={content} onLinkClick={onSelectMemo} allMemos={allMemos} activeTheme={activeTheme} />

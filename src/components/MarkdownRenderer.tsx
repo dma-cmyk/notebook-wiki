@@ -174,6 +174,108 @@ export function MarkdownRenderer({ content, onLinkClick, allMemos = [], activeTh
       continue;
     }
 
+    // Multimedia match: ![Description](URL)
+    const mediaMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (mediaMatch) {
+      if (inList) flushList(`list-${i}`);
+      const alt = mediaMatch[1];
+      const url = mediaMatch[2];
+      const lowerUrl = url.toLowerCase();
+      const lowerAlt = alt.toLowerCase();
+
+      let mediaType: "image" | "audio" | "video" | "unknown" = "unknown";
+      if (
+        lowerUrl.endsWith(".png") ||
+        lowerUrl.endsWith(".jpg") ||
+        lowerUrl.endsWith(".jpeg") ||
+        lowerUrl.endsWith(".gif") ||
+        lowerUrl.endsWith(".webp") ||
+        lowerUrl.endsWith(".bmp") ||
+        lowerUrl.startsWith("data:image/") ||
+        lowerAlt.includes("image") ||
+        lowerAlt.includes("画像") ||
+        lowerAlt.includes("写真")
+      ) {
+        mediaType = "image";
+      } else if (
+        lowerUrl.endsWith(".mp3") ||
+        lowerUrl.endsWith(".wav") ||
+        lowerUrl.endsWith(".m4a") ||
+        lowerUrl.endsWith(".ogg") ||
+        lowerUrl.endsWith(".aac") ||
+        lowerUrl.startsWith("data:audio/") ||
+        lowerAlt.includes("audio") ||
+        lowerAlt.includes("音声") ||
+        lowerAlt.includes("録音") ||
+        lowerAlt.includes("ボイス")
+      ) {
+        mediaType = "audio";
+      } else if (
+        lowerUrl.endsWith(".mp4") ||
+        lowerUrl.endsWith(".webm") ||
+        lowerUrl.endsWith(".ogg") ||
+        lowerUrl.endsWith(".mov") ||
+        lowerUrl.startsWith("data:video/") ||
+        lowerAlt.includes("video") ||
+        lowerAlt.includes("動画") ||
+        lowerAlt.includes("映像")
+      ) {
+        mediaType = "video";
+      }
+
+      if (mediaType === "image") {
+        elements.push(
+          <div key={i} className="mb-4 group relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs transition-all hover:shadow-md bg-slate-50 dark:bg-slate-900/40 p-1 max-w-lg">
+            <img
+              src={url}
+              alt={alt || "画像"}
+              className="w-full max-h-[350px] object-contain rounded-lg bg-black cursor-zoom-in transition-transform duration-300 group-hover:scale-[1.005]"
+              referrerPolicy="no-referrer"
+              onClick={() => {
+                window.open(url, "_blank");
+              }}
+            />
+            {alt && (
+              <div className="px-2.5 py-1 text-[11px] text-slate-500 dark:text-slate-400 font-sans truncate">
+                📷 {alt}
+              </div>
+            )}
+          </div>
+        );
+        continue;
+      } else if (mediaType === "audio") {
+        elements.push(
+          <div key={i} className={`p-4 mb-4 rounded-xl border flex flex-col gap-2 shadow-xs max-w-md ${isDark ? "bg-slate-900/60 border-slate-800 text-slate-100" : "bg-slate-50 border-slate-200 text-slate-800"}`}>
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${isDark ? "bg-slate-800 text-indigo-400" : "bg-white text-indigo-600"} border dark:border-slate-700 shadow-xs`}>
+                <svg className="w-4 h-4 text-indigo-500 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M12 18.75V5.25L7.72 9.53H4.5a.75.75 0 00-.75.75v3.44c0 .414.336.75.75.75h3.22L12 18.75z" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold truncate">{alt || "音声プレイヤー"}</p>
+                <p className="text-[10px] text-slate-400 font-mono">Audio Clip</p>
+              </div>
+            </div>
+            <audio src={url} controls className="w-full h-8 outline-none mt-1" />
+          </div>
+        );
+        continue;
+      } else if (mediaType === "video") {
+        elements.push(
+          <div key={i} className="mb-4 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-xs bg-black max-w-lg">
+            <video src={url} controls className="w-full max-h-[300px]" />
+            {alt && (
+              <div className="px-3 py-1.5 text-xs text-slate-400 bg-slate-900/90 border-t border-slate-800 truncate">
+                🎥 {alt}
+              </div>
+            )}
+          </div>
+        );
+        continue;
+      }
+    }
+
     // Standard paragraph
     if (inList) flushList(`list-${i}`);
 

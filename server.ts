@@ -14,17 +14,24 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3100;
+const PORT = 3000;
 const DATA_DIR = path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 
-// Ensure data directory and database file exist
+// Ensure data directory, database file, and uploads directory exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], memos: [] }, null, 2));
 }
+
+// Serve uploaded files statically
+app.use("/uploads", express.static(UPLOADS_DIR));
 
 // In-memory sessions map: token -> user's decrypted 32-byte master key (Buffer)
 const activeSessions = new Map<string, { userId: string; username: string; masterKey: Buffer }>();
@@ -134,6 +141,62 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+// Helper function to handle Gemini API generateContent calls with retries and fallback models
+async function safeGenerateContent(
+  userAi: any,
+  params: { model: string; contents: any; config?: any },
+  retries = 3,
+  delay = 1000
+): Promise<any> {
+  let attempt = 0;
+  let originalModel = params.model;
+  while (true) {
+    try {
+      return await userAi.models.generateContent(params);
+    } catch (err: any) {
+      attempt++;
+      const errMsg = err?.message || String(err);
+      const isRateLimitOrUnavailable =
+        err?.status === "UNAVAILABLE" ||
+        err?.status === "RESOURCE_EXHAUSTED" ||
+        err?.statusCode === 503 ||
+        err?.statusCode === 429 ||
+        errMsg.includes("503") ||
+        errMsg.includes("429") ||
+        errMsg.includes("high demand") ||
+        errMsg.includes("limit") ||
+        errMsg.includes("UNAVAILABLE") ||
+        errMsg.includes("Resource exhausted");
+
+      if (isRateLimitOrUnavailable && attempt <= retries) {
+        const actualDelay = delay * Math.pow(2, attempt - 1);
+        console.warn(`Gemini API call failed with temporary error (attempt ${attempt}/${retries}). Retrying in ${actualDelay}ms...`, errMsg);
+        await new Promise((resolve) => setTimeout(resolve, actualDelay));
+        continue;
+      }
+
+      // Fallback model sequence if we're seeing persistent errors
+      const fallbackModels = ["gemini-3.1-flash-lite", "gemini-flash-latest"];
+      const currentModelIndex = fallbackModels.indexOf(params.model);
+      if (currentModelIndex === -1 && params.model === "gemini-3.5-flash" && attempt <= retries + 1) {
+        const nextModel = fallbackModels[0];
+        console.warn(`Persistent error on ${params.model}. Falling back to ${nextModel}...`, errMsg);
+        params.model = nextModel;
+        attempt = 0; // reset attempts for the fallback model
+        continue;
+      } else if (currentModelIndex !== -1 && currentModelIndex < fallbackModels.length - 1 && attempt <= retries + 1) {
+        const nextModel = fallbackModels[currentModelIndex + 1];
+        console.warn(`Persistent error on ${params.model}. Falling back to next model ${nextModel}...`, errMsg);
+        params.model = nextModel;
+        attempt = 0;
+        continue;
+      }
+
+      throw err;
+    }
+  }
+}
 
 // Middleware for parsing json and static files
 app.use(express.json({ limit: "50mb" }));
@@ -576,7 +639,7 @@ Return only the JSON containing "tags" (string array of exactly 5 elements), "re
               },
             });
           }
-          const response = await userAi.models.generateContent({
+          const response = await safeGenerateContent(userAi, {
             model: model,
             contents: prompt,
             config: {
@@ -1121,6 +1184,7 @@ Your tasks:
 
 CRITICAL RULE FOR MEMO GENERATION/EDITING:
 - You must write the actual rich content for the memo in "memoContent" in Japanese Markdown. Do not just write a short summary unless asked. Generate a comprehensive text as if a human wrote it.
+- If the user's message includes user-attached file information with a URL (such as '■ ファイル名: audio.mp3 (種類: audio/mp3, URL: /uploads/...)'), you MUST embed that file nicely in the generated or updated 'memoContent' at a contextually appropriate location using standard Markdown image/audio/video embed tags (e.g., '![alt text](url)'). For images, use the format '![画像: 説明](url)'. For audio, use '![音声: 説明](url)'. For video, use '![動画: 説明](url)'. Ensure you place them beautifully to structure the memo content (e.g., placing an uploaded image below a heading, or a voice/video clip near its transcript summary).
 - Since all fields ("type", "memoTitle", "memoContent", "targetMemoId") are required in the output JSON schema, you MUST provide them. Use empty string "" for any unused field (do not omit them).
 
 Return ONLY a JSON response matching the required schema.
@@ -1145,7 +1209,7 @@ Return ONLY a JSON response matching the required schema.
           },
         });
       }
-      const response = await userAi.models.generateContent({
+      const response = await safeGenerateContent(userAi, {
         model: model,
         contents: prompt,
         config: {
@@ -1371,7 +1435,7 @@ Original transcription: "${transcript}"`;
           httpOptions: { headers: { "User-Agent": "aistudio-build" } },
         });
       }
-      const response = await userAi.models.generateContent({
+      const response = await safeGenerateContent(userAi, {
         model: model,
         contents: prompt,
         config: {
@@ -1485,7 +1549,7 @@ Return ONLY a JSON response matching this schema:
           httpOptions: { headers: { "User-Agent": "aistudio-build" } },
         });
       }
-      const response = await userAi.models.generateContent({
+      const response = await safeGenerateContent(userAi, {
         model: model,
         contents: prompt,
         config: {
@@ -1827,7 +1891,7 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
 
       let response;
       try {
-        response = await userAi.models.generateContent({
+        response = await safeGenerateContent(userAi, {
           model: model,
           contents: { parts: [filePart, textPart] },
         });
@@ -1840,13 +1904,13 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
           const isBinary = buffer.some((byte) => byte === 0 || (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13));
           if (!isBinary) {
             const textContent = buffer.toString("utf-8");
-            const fallbackResponse = await userAi.models.generateContent({
+            const fallbackResponse = await safeGenerateContent(userAi, {
               model: model,
               contents: `${prompt}\n\n[ファイル名: ${fileName || "unknown"}, ファイルタイプ: ${mimeType}]\n\nテキストコンテンツ:\n${textContent.slice(0, 50000)}`,
             });
             resultText = fallbackResponse?.text?.trim() || "";
           } else {
-            const fallbackResponse = await userAi.models.generateContent({
+            const fallbackResponse = await safeGenerateContent(userAi, {
               model: model,
               contents: `以下のバイナリファイルがユーザーより添付されました。拡張子やファイル名、サイズからどのようなファイルか推測し、考えられる用途や特徴、構造を分かりやすく日本語で解説・要約してください。
 ファイル名: ${fileName || "unknown"}
@@ -1913,6 +1977,30 @@ app.post("/api/memos/analyze-file", requireAuth, async (req: any, res: any) => {
   } catch (err: any) {
     console.error("File analysis failed:", err);
     res.status(500).json({ error: "AIによるファイル解析に失敗しました: " + (err.message || String(err)) });
+  }
+});
+
+// 7.10.5. Memo Endpoint: Standard file upload for embedding in memos
+app.post("/api/upload", requireAuth, (req: any, res) => {
+  const { fileData, mimeType, fileName } = req.body;
+  if (!fileData || !mimeType || !fileName) {
+    return res.status(400).json({ error: "fileData, mimeType, and fileName are required" });
+  }
+
+  try {
+    const buffer = Buffer.from(fileData, "base64");
+    const uuid = crypto.randomUUID();
+    const cleanFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    const safeName = `${uuid}-${cleanFileName}`;
+    const filePath = path.join(UPLOADS_DIR, safeName);
+    
+    fs.writeFileSync(filePath, buffer);
+    const fileUrl = `/uploads/${safeName}`;
+    
+    res.json({ success: true, url: fileUrl, fileName, mimeType });
+  } catch (err: any) {
+    console.error("File upload failed:", err);
+    res.status(500).json({ error: "ファイルのアップロードに失敗しました: " + err.message });
   }
 });
 
@@ -2027,7 +2115,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
             });
           }
 
-          const geminiRes = await userAi.models.generateContent({
+          const geminiRes = await safeGenerateContent(userAi, {
             model: model,
             contents: `${rssSystemPrompt}\n\nFeed Content:\n${rawText.slice(0, 50000)}`,
           });
@@ -2072,7 +2160,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
             });
           }
 
-          const geminiRes = await userAi.models.generateContent({
+          const geminiRes = await safeGenerateContent(userAi, {
             model: model,
             contents: `${systemPrompt}\n\nHTML Content:\n${rawText.slice(0, 50000)}`,
           });
@@ -2160,7 +2248,7 @@ app.post("/api/memos/fetch-url", requireAuth, async (req: any, res: any) => {
           },
         };
 
-        const responseAI = await userAi.models.generateContent({
+        const responseAI = await safeGenerateContent(userAi, {
           model: activeModel,
           contents: { parts: [filePart, { text: prompt }] },
         });
