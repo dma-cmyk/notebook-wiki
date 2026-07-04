@@ -73,6 +73,7 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
     content: string;
     isAnalyzing: boolean;
     error?: string;
+    url?: string;
   }
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -196,6 +197,42 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
 
   const processFile = async (id: string, file: File, mimeType: string, isText: boolean) => {
     try {
+      let uploadedUrl = "";
+
+      // Convert to base64
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64 = result.split(",")[1] || result;
+          resolve(base64);
+        };
+        reader.onerror = (err) => reject(err);
+        reader.readAsDataURL(file);
+      });
+      const base64Data = await base64Promise;
+
+      // Upload file to /api/upload
+      const uploadRes = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          fileData: base64Data,
+          mimeType,
+          fileName: file.name,
+        }),
+      });
+
+      if (uploadRes.ok) {
+        const uploadData = await uploadRes.json();
+        if (uploadData.success && uploadData.url) {
+          uploadedUrl = uploadData.url;
+        }
+      }
+
       if (isText) {
         const reader = new FileReader();
         const contentPromise = new Promise<string>((resolve, reject) => {
@@ -205,21 +242,9 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
         reader.readAsText(file);
         const content = await contentPromise;
         setAttachedFiles((prev) =>
-          prev.map((f) => (f.id === id ? { ...f, content, isAnalyzing: false } : f))
+          prev.map((f) => (f.id === id ? { ...f, content, url: uploadedUrl, isAnalyzing: false } : f))
         );
       } else {
-        const base64Promise = new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            const base64 = result.split(",")[1] || result;
-            resolve(base64);
-          };
-          reader.onerror = (err) => reject(err);
-          reader.readAsDataURL(file);
-        });
-        const base64Data = await base64Promise;
-
         const res = await fetch("/api/memos/analyze-file", {
           method: "POST",
           headers: {
@@ -245,6 +270,7 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
               ? {
                   ...f,
                   content: data.text || `【解析結果のテキスト】\n${data.extractedText || ""}\n\n【要約・詳細】\n${data.summary || ""}`,
+                  url: uploadedUrl,
                   isAnalyzing: false,
                 }
               : f
@@ -588,7 +614,7 @@ export function AiSearchChat({ memos, activeTheme, token, onSelectMemo, setActiv
     if (attachedFiles.length > 0) {
       finalQuery += "\n\n---\n📎 【ユーザーが添付したファイルの情報】";
       attachedFiles.forEach((file) => {
-        finalQuery += `\n\n■ ファイル名: ${file.name} (種類: ${file.type})`;
+        finalQuery += `\n\n■ ファイル名: ${file.name} (種類: ${file.type}${file.url ? `, URL: ${file.url}` : ""})`;
         if (file.error) {
           finalQuery += `\n(エラー: ${file.error})`;
         } else {
